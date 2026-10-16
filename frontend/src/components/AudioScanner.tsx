@@ -1,16 +1,18 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Upload, Sparkles, AlertCircle, Play, Check, ShieldCheck, Loader2, Music } from 'lucide-react';
+import { MessageSquare, Mic, Square, Upload, FileText, AlertCircle, Loader2, Music, ShieldCheck } from 'lucide-react';
 import { Language, AnalysisResult } from '../types';
 import { translations } from '../lib/translations';
-import { DEMO_SCENARIOS, DemoItem } from '../lib/demoScenarios';
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000';
 
 interface AudioScannerProps {
   lang: Language;
   onAnalysisComplete: (result: AnalysisResult) => void;
   isLoading: boolean;
   setIsLoading: (val: boolean) => void;
+  token: string | null;
 }
 
 export const AudioScanner: React.FC<AudioScannerProps> = ({
@@ -18,20 +20,22 @@ export const AudioScanner: React.FC<AudioScannerProps> = ({
   onAnalysisComplete,
   isLoading,
   setIsLoading,
+  token,
 }) => {
   const t = translations[lang];
 
-  // Tab: 'record' | 'upload' | 'demo'
-  const [activeMode, setActiveMode] = useState<'record' | 'upload' | 'demo'>('demo');
+  // Default tab is now Message / Text as requested in v2 guide!
+  const [activeMode, setActiveMode] = useState<'text' | 'voice'>('text');
+  const [textInput, setTextInput] = useState<string>('');
   const [selectedRelation, setSelectedRelation] = useState<string>('Grandson');
-  const [hasConsent, setHasConsent] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // File Upload State
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const txtFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // MediaRecorder Live State
+  // Live Recording State
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
@@ -39,14 +43,108 @@ export const AudioScanner: React.FC<AudioScannerProps> = ({
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Clean up timer on unmount
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
 
-  // Live Recording Handlers
+  // Text File (.txt) loader
+  const handleTxtFileLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = event.target?.result as string;
+        if (content) {
+          setTextInput(content.slice(0, 10000));
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  // 1. Text Analysis Handler
+  const handleAnalyzeText = async () => {
+    if (!textInput.trim()) {
+      setErrorMessage('Please paste or type the message text to analyze.');
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      setErrorMessage(null);
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`${BACKEND_URL}/analyze-text`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          text: textInput,
+          claimed_relation: selectedRelation,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Text analysis failed on server.');
+      }
+
+      onAnalysisComplete(data);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Analysis failed. Please verify backend connection.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 2. Audio Analysis Handler
+  const handleAnalyzeAudio = async (audioData: File | Blob, filename: string) => {
+    try {
+      setIsLoading(true);
+      setErrorMessage(null);
+
+      const formData = new FormData();
+      formData.append('audio', audioData, filename);
+      if (selectedRelation) {
+        formData.append('claimed_relation', selectedRelation);
+      }
+
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`${BACKEND_URL}/analyze`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Voice analysis failed on server.');
+      }
+
+      if (audioData instanceof Blob) {
+        data.audioBlobUrl = URL.createObjectURL(audioData);
+      }
+
+      onAnalysisComplete(data);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Voice analysis failed. Please verify backend connection.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Live Mic Recording
   const startRecording = async () => {
     try {
       setErrorMessage(null);
@@ -56,27 +154,21 @@ export const AudioScanner: React.FC<AudioScannerProps> = ({
       mediaRecorderRef.current = mediaRecorder;
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
 
       mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        setRecordedBlob(audioBlob);
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        setRecordedBlob(blob);
         stream.getTracks().forEach((track) => track.stop());
       };
 
       mediaRecorder.start();
       setIsRecording(true);
       setRecordingSeconds(0);
-
-      timerRef.current = setInterval(() => {
-        setRecordingSeconds((prev) => prev + 1);
-      }, 1000);
-    } catch (err: any) {
-      setErrorMessage('Microphone access denied or not available. Please allow microphone permissions or use file upload.');
-      console.error(err);
+      timerRef.current = setInterval(() => setRecordingSeconds((prev) => prev + 1), 1000);
+    } catch (err) {
+      setErrorMessage('Microphone access denied or not available.');
     }
   };
 
@@ -88,62 +180,6 @@ export const AudioScanner: React.FC<AudioScannerProps> = ({
     }
   };
 
-  // Submit audio file or recorded blob for analysis
-  const runAnalysis = async (fileToAnalyze: File | Blob, filename: string) => {
-    if (!hasConsent) {
-      setErrorMessage('Please check the consent confirmation box before analyzing.');
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      setErrorMessage(null);
-
-      const formData = new FormData();
-      formData.append('audio', fileToAnalyze, filename);
-      formData.append('claimed_relation', selectedRelation);
-
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server returned error code ${response.status}`);
-      }
-
-      const data: AnalysisResult = await response.json();
-      
-      // Store blob URL if available for audio playback
-      if (fileToAnalyze instanceof Blob) {
-        data.audioBlobUrl = URL.createObjectURL(fileToAnalyze);
-      }
-
-      onAnalysisComplete(data);
-    } catch (err: any) {
-      console.error('Analysis failed:', err);
-      setErrorMessage(`Analysis failed: ${err.message || 'Please check backend server connection.'}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Handle Demo Scenario Selection
-  const handleSelectDemo = (demo: DemoItem) => {
-    if (!hasConsent) {
-      setErrorMessage('Please check the consent confirmation box before analyzing.');
-      return;
-    }
-    setIsLoading(true);
-    setErrorMessage(null);
-
-    // Simulate instant analysis pipeline with realistic timing
-    setTimeout(() => {
-      setIsLoading(false);
-      onAnalysisComplete(demo.mockResult);
-    }, 1200);
-  };
-
   const formatSeconds = (sec: number) => {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
@@ -152,12 +188,12 @@ export const AudioScanner: React.FC<AudioScannerProps> = ({
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Hero Title & Description */}
+      {/* Title */}
       <div className="text-center space-y-2">
         <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
           {t.scannerHeading}
         </h1>
-        <p className="text-slate-400 text-sm sm:text-base max-w-2xl mx-auto">
+        <p className="text-slate-400 text-xs sm:text-sm max-w-2xl mx-auto">
           {t.scannerSubheading}
         </p>
       </div>
@@ -165,55 +201,43 @@ export const AudioScanner: React.FC<AudioScannerProps> = ({
       {/* Mode Switcher Tabs */}
       <div className="flex bg-slate-900 p-1.5 rounded-xl border border-slate-800 shadow-md">
         <button
-          onClick={() => setActiveMode('demo')}
+          onClick={() => setActiveMode('text')}
           className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-lg text-sm font-semibold transition-all ${
-            activeMode === 'demo'
+            activeMode === 'text'
               ? 'bg-blue-600 text-white shadow-lg'
               : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
           }`}
         >
-          <Sparkles className="w-4 h-4 text-amber-300" />
-          <span>{t.demoTab} (1-Click Test)</span>
+          <MessageSquare className="w-4 h-4" />
+          <span>{t.textModeTab}</span>
         </button>
 
         <button
-          onClick={() => setActiveMode('record')}
+          onClick={() => setActiveMode('voice')}
           className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-lg text-sm font-semibold transition-all ${
-            activeMode === 'record'
+            activeMode === 'voice'
               ? 'bg-blue-600 text-white shadow-lg'
               : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
           }`}
         >
           <Mic className="w-4 h-4" />
-          <span>{t.recordTab}</span>
-        </button>
-
-        <button
-          onClick={() => setActiveMode('upload')}
-          className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-lg text-sm font-semibold transition-all ${
-            activeMode === 'upload'
-              ? 'bg-blue-600 text-white shadow-lg'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-          }`}
-        >
-          <Upload className="w-4 h-4" />
-          <span>{t.uploadTab}</span>
+          <span>{t.voiceModeTab}</span>
         </button>
       </div>
 
-      {/* Main Action Container */}
+      {/* Container */}
       <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-6 sm:p-8 shadow-2xl backdrop-blur-sm">
-        {/* Caller Claim Selector */}
+        {/* Claimed Relationship */}
         <div className="mb-6">
-          <label className="block text-sm font-semibold text-slate-300 mb-2">
-            {t.selectRelation}
+          <label className="block text-xs font-semibold text-slate-300 mb-2">
+            Who did the caller or sender claim to be?
           </label>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {[
-              { id: 'Grandson', label: t.relationGrandson },
-              { id: 'Child', label: t.relationChild },
-              { id: 'Police', label: t.relationPolice },
-              { id: 'Other', label: t.relationOther },
+              { id: 'Grandson', label: 'Grandson / Granddaughter' },
+              { id: 'Child', label: 'Son / Daughter' },
+              { id: 'Police', label: 'Police / Law Enforcement' },
+              { id: 'Other', label: 'Other Relative / Unknown' },
             ].map((item) => (
               <button
                 key={item.id}
@@ -231,224 +255,166 @@ export const AudioScanner: React.FC<AudioScannerProps> = ({
           </div>
         </div>
 
-        {/* MODE 1: DEMO SCENARIOS */}
-        {activeMode === 'demo' && (
+        {/* TAB 1: TEXT / MESSAGE INPUT (Default) */}
+        {activeMode === 'text' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                Instant Evaluation Library (No Mic Required)
-              </span>
-              <span className="text-[11px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded">
-                Click any scenario to analyze
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {DEMO_SCENARIOS.map((demo) => {
-                const isHigh = demo.expectedRisk === 'HIGH';
-                const isLow = demo.expectedRisk === 'LOW';
-
-                return (
-                  <div
-                    key={demo.id}
-                    onClick={() => handleSelectDemo(demo)}
-                    className="group bg-slate-800/60 hover:bg-slate-800 border border-slate-700/80 hover:border-blue-500 rounded-xl p-4 cursor-pointer transition-all flex flex-col justify-between hover:shadow-lg relative overflow-hidden"
-                  >
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span
-                          className={`text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
-                            isHigh
-                              ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
-                              : isLow
-                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                              : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                          }`}
-                        >
-                          {demo.expectedRisk} RISK
-                        </span>
-                        <span className="text-xs text-slate-400 font-medium">{demo.relation}</span>
-                      </div>
-
-                      <h3 className="font-bold text-white text-sm group-hover:text-blue-400 transition-colors">
-                        {demo.title}
-                      </h3>
-                      <p className="text-xs text-slate-400 line-clamp-2">{demo.callerDesc}</p>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-slate-700/60 flex items-center justify-between text-xs text-blue-400 font-semibold">
-                      <span className="flex items-center space-x-1">
-                        <Play className="w-3.5 h-3.5 fill-current" />
-                        <span>Run Full Scan</span>
-                      </span>
-                      <Sparkles className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* MODE 2: LIVE MICROPHONE RECORDING */}
-        {activeMode === 'record' && (
-          <div className="flex flex-col items-center justify-center py-8 space-y-6">
-            {/* Visual Record Orb */}
-            <div className="relative">
-              {isRecording && (
-                <div className="absolute inset-0 rounded-full bg-rose-500 animate-ping opacity-40 scale-125" />
-              )}
-              <div
-                className={`w-28 h-28 rounded-full flex items-center justify-center transition-all ${
-                  isRecording
-                    ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/30'
-                    : 'bg-slate-800 text-slate-300 border border-slate-700 hover:border-blue-500'
-                }`}
-              >
-                <Mic className={`w-12 h-12 ${isRecording ? 'animate-pulse' : ''}`} />
-              </div>
-            </div>
-
-            {/* Timer and Status */}
-            <div className="text-center">
-              <span className="text-3xl font-black text-white font-mono tracking-wider">
-                {formatSeconds(recordingSeconds)}
-              </span>
-              <p className="text-xs text-slate-400 mt-1">
-                {isRecording ? t.recordingInProgress : 'Press button below to begin recording'}
-              </p>
-            </div>
-
-            {/* Control Button */}
-            {!isRecording ? (
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Suspicious Message Text / Conversation Transcript
+              </label>
               <button
                 type="button"
-                onClick={startRecording}
-                disabled={isLoading}
-                className="w-full sm:w-auto px-8 py-3.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg shadow-blue-600/30 flex items-center justify-center space-x-2 transition-all"
+                onClick={() => txtFileInputRef.current?.click()}
+                className="text-xs text-blue-400 hover:text-blue-300 flex items-center space-x-1 font-semibold"
               >
-                <Mic className="w-5 h-5" />
-                <span>{t.startRecord}</span>
+                <FileText className="w-3.5 h-3.5" />
+                <span>{t.uploadTxtBtn}</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={stopRecording}
-                className="w-full sm:w-auto px-8 py-3.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl shadow-lg shadow-rose-600/30 flex items-center justify-center space-x-2 transition-all animate-pulse"
-              >
-                <Square className="w-5 h-5 fill-current" />
-                <span>{t.stopRecord}</span>
-              </button>
-            )}
+              <input
+                type="file"
+                ref={txtFileInputRef}
+                accept=".txt"
+                className="hidden"
+                onChange={handleTxtFileLoad}
+              />
+            </div>
 
-            {/* If recorded blob ready */}
-            {recordedBlob && !isRecording && (
-              <div className="w-full max-w-md bg-slate-800/80 p-4 rounded-xl border border-slate-700 flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <Music className="w-5 h-5 text-cyan-400" />
-                  <div>
-                    <p className="text-xs font-semibold text-white">Recorded Voice Note ({formatSeconds(recordingSeconds)})</p>
-                    <p className="text-[10px] text-slate-400">Ready for forensic scan</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => runAnalysis(recordedBlob, 'live_recording.wav')}
-                  disabled={isLoading}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-all shadow-md"
-                >
-                  Analyze Audio
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* MODE 3: AUDIO FILE UPLOAD */}
-        {activeMode === 'upload' && (
-          <div className="space-y-4">
-            <input
-              type="file"
-              ref={fileInputRef}
-              accept="audio/*,.mp3,.wav,.ogg,.opus,.m4a"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) setUploadedFile(file);
-              }}
+            <textarea
+              rows={6}
+              value={textInput}
+              onChange={(e) => setTextInput(e.target.value)}
+              placeholder={t.textPlaceholder}
+              className="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl p-4 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 leading-relaxed font-mono"
             />
 
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-slate-700 hover:border-blue-500 rounded-xl p-8 text-center cursor-pointer transition-all bg-slate-800/30 hover:bg-slate-800/60"
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>{textInput.length} / 10,000 characters</span>
+              <span>Only factual entities extracted; nothing invented</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleAnalyzeText}
+              disabled={isLoading || !textInput.trim()}
+              className="w-full py-3.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg shadow-blue-600/30 flex items-center justify-center space-x-2 transition-all disabled:opacity-50"
             >
-              <Upload className="w-10 h-10 text-slate-400 mx-auto mb-3" />
-              <p className="text-sm font-semibold text-white">{t.dragDropText}</p>
-              <p className="text-xs text-slate-500 mt-1">Supports WhatsApp Voice Notes (.opus, .ogg) & Calls (.mp3, .wav)</p>
-            </div>
-
-            {uploadedFile && (
-              <div className="bg-slate-800/80 p-4 rounded-xl border border-slate-700 flex items-center justify-between">
-                <div className="flex items-center space-x-3 truncate">
-                  <Music className="w-5 h-5 text-blue-400 flex-shrink-0" />
-                  <div className="truncate">
-                    <p className="text-xs font-semibold text-white truncate">{uploadedFile.name}</p>
-                    <p className="text-[10px] text-slate-400">
-                      {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • {uploadedFile.type || 'audio'}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => runAnalysis(uploadedFile, uploadedFile.name)}
-                  disabled={isLoading}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-all shadow-md ml-3 flex-shrink-0"
-                >
-                  {t.analyzeBtn}
-                </button>
-              </div>
-            )}
+              <span>{t.analyzeTextBtn}</span>
+            </button>
           </div>
         )}
 
-        {/* Consent & Ethics Disclaimer Checkbox (Step 9 from guide) */}
-        <div className="mt-6 pt-4 border-t border-slate-800">
-          <label className="flex items-start space-x-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={hasConsent}
-              onChange={(e) => setHasConsent(e.target.checked)}
-              className="mt-0.5 w-4 h-4 rounded text-blue-600 bg-slate-800 border-slate-700 focus:ring-blue-500"
-            />
-            <span className="text-xs text-slate-400 leading-relaxed">
-              {t.consentText}
-            </span>
-          </label>
-        </div>
+        {/* TAB 2: VOICE RECORDING & AUDIO UPLOAD */}
+        {activeMode === 'voice' && (
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-6 py-4">
+              {/* Live Mic Recorder */}
+              <div className="flex-1 flex flex-col items-center justify-center p-6 bg-slate-950/60 rounded-xl border border-slate-800 space-y-4 w-full">
+                <div
+                  className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${
+                    isRecording
+                      ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/40 animate-pulse'
+                      : 'bg-slate-800 text-slate-300 border border-slate-700'
+                  }`}
+                >
+                  <Mic className="w-8 h-8" />
+                </div>
+                <div className="text-center">
+                  <span className="text-2xl font-black text-white font-mono">{formatSeconds(recordingSeconds)}</span>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    {isRecording ? 'Recording microphone...' : 'Microphone audio'}
+                  </p>
+                </div>
+                {!isRecording ? (
+                  <button
+                    type="button"
+                    onClick={startRecording}
+                    className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-all"
+                  >
+                    {t.startRecord}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={stopRecording}
+                    className="px-6 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl animate-pulse"
+                  >
+                    {t.stopRecord}
+                  </button>
+                )}
 
-        {/* Error Notification */}
+                {recordedBlob && !isRecording && (
+                  <button
+                    type="button"
+                    onClick={() => handleAnalyzeAudio(recordedBlob, 'live_call.wav')}
+                    disabled={isLoading}
+                    className="mt-2 w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-md"
+                  >
+                    Analyze Recorded Clip
+                  </button>
+                )}
+              </div>
+
+              {/* File Upload Box */}
+              <div className="flex-1 w-full">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept="audio/*,.mp3,.wav,.ogg,.opus,.m4a"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) setUploadedFile(f);
+                  }}
+                />
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-slate-700 hover:border-blue-500 rounded-xl p-6 text-center cursor-pointer transition-all bg-slate-950/40 hover:bg-slate-950/70"
+                >
+                  <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                  <p className="text-xs font-semibold text-white">{t.uploadAudioPrompt}</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Audio files are never saved on server disk.</p>
+                </div>
+
+                {uploadedFile && (
+                  <div className="mt-3 bg-slate-800/80 p-3 rounded-xl border border-slate-700 flex items-center justify-between">
+                    <div className="truncate text-xs">
+                      <p className="font-semibold text-white truncate">{uploadedFile.name}</p>
+                      <p className="text-[10px] text-slate-400">{(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleAnalyzeAudio(uploadedFile, uploadedFile.name)}
+                      disabled={isLoading}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg ml-2 flex-shrink-0"
+                    >
+                      Analyze File
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Error Alert */}
         {errorMessage && (
-          <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-center space-x-3 text-rose-300 text-xs">
+          <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-center space-x-2 text-rose-300 text-xs">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
             <span>{errorMessage}</span>
           </div>
         )}
 
-        {/* Loading Spinner Indicator */}
+        {/* Loading Spinner */}
         {isLoading && (
-          <div className="mt-6 p-6 bg-slate-800/90 rounded-xl border border-blue-500/40 text-center space-y-3 animate-pulse">
+          <div className="mt-6 p-6 bg-slate-800/90 rounded-xl border border-blue-500/40 text-center space-y-2 animate-pulse">
             <Loader2 className="w-8 h-8 text-blue-400 animate-spin mx-auto" />
-            <div>
-              <p className="text-sm font-bold text-white">{t.analyzingText}</p>
-              <p className="text-xs text-slate-400 mt-1">
-                Querying DetectifAI API & Gemini Reasoning Engine...
-              </p>
-            </div>
+            <p className="text-sm font-bold text-white">Analyzing Forensic Artifacts & Extortion Intent...</p>
+            <p className="text-xs text-slate-400">DetectifAI voice verification & Gemini reasoning pipeline active.</p>
           </div>
         )}
       </div>
 
-      {/* Honest Disclaimer (Step 9 from build guide) */}
+      {/* Honest Disclaimer */}
       <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-800 flex items-start space-x-3 text-slate-400 text-xs">
         <ShieldCheck className="w-4 h-4 text-cyan-400 flex-shrink-0 mt-0.5" />
         <p>{t.disclaimer}</p>

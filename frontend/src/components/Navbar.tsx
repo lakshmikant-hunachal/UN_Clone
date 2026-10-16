@@ -1,8 +1,8 @@
 'use client';
 
 import React from 'react';
-import { ShieldAlert, ShieldCheck, PhoneCall, Globe, Users, FileText, HelpCircle, History, Sparkles } from 'lucide-react';
-import { Language } from '../types';
+import { ShieldAlert, ShieldCheck, PhoneCall, Globe, Users, FileText, HelpCircle, History, Sparkles, LogOut, User } from 'lucide-react';
+import { Language, UserProfile } from '../types';
 import { translations } from '../lib/translations';
 
 interface NavbarProps {
@@ -11,6 +11,8 @@ interface NavbarProps {
   lang: Language;
   setLang: (lang: Language) => void;
   hasResult: boolean;
+  currentUser: UserProfile | null;
+  onLogout: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -19,6 +21,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   lang,
   setLang,
   hasResult,
+  currentUser,
+  onLogout,
 }) => {
   const t = translations[lang];
 
@@ -47,30 +51,48 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div>
               <div className="flex items-center space-x-2">
                 <span className="text-xl font-bold tracking-tight text-white">{t.appTitle}</span>
-                <span className="bg-cyan-500/20 text-cyan-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-cyan-500/30">
-                  DetectifAI Inside
+                <span className="bg-emerald-500/20 text-emerald-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  Family Edition v2
                 </span>
               </div>
               <p className="text-xs text-slate-400 hidden sm:block">{t.appSubtitle}</p>
             </div>
           </div>
 
-          {/* Language Selector */}
-          <div className="flex items-center space-x-2 bg-slate-800/80 p-1 rounded-lg border border-slate-700">
-            <Globe className="w-4 h-4 text-slate-400 ml-1.5" />
-            {(['en', 'hi', 'kn'] as Language[]).map((l) => (
-              <button
-                key={l}
-                onClick={() => setLang(l)}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${
-                  lang === l
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                {l === 'en' ? 'EN' : l === 'hi' ? 'हिंदी' : 'ಕನ್ನಡ'}
-              </button>
-            ))}
+          {/* Right Section: User Status & Language */}
+          <div className="flex items-center space-x-3">
+            {currentUser && (
+              <div className="flex items-center space-x-2 bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700 text-xs">
+                <User className="w-3.5 h-3.5 text-blue-400" />
+                <span className="text-slate-200 font-medium hidden md:inline">{currentUser.name}</span>
+                <button
+                  onClick={onLogout}
+                  title="Log Out"
+                  className="ml-2 text-slate-400 hover:text-rose-400 transition-colors flex items-center space-x-1"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{t.logout}</span>
+                </button>
+              </div>
+            )}
+
+            {/* Language Selector */}
+            <div className="flex items-center space-x-1 bg-slate-800/80 p-1 rounded-lg border border-slate-700">
+              <Globe className="w-3.5 h-3.5 text-slate-400 ml-1.5" />
+              {(['en', 'hi', 'kn'] as Language[]).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setLang(l)}
+                  className={`px-2 py-0.5 text-xs font-medium rounded transition-all ${
+                    lang === l
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {l === 'en' ? 'EN' : l === 'hi' ? 'हिंदी' : 'ಕನ್ನಡ'}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

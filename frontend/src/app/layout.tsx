@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'UNclone Agent | Family Emergency AI Voice Scam Protection',
-  description: 'Defensive AI agent app protecting families against voice-clone and fake-relative emergency scams using DetectifAI and LLM reasoning.',
+  title: 'FamilyShield AI | Family Voice-Clone & Emergency Scam Defense',
+  description: 'Defensive AI platform protecting families and seniors against voice-clone calls and emergency extortion using DetectifAI and honest LLM reasoning.',
 };
 
 export default function RootLayout({
